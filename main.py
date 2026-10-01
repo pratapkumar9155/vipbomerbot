@@ -19,7 +19,7 @@ import os
 BOT_TOKEN = "8692875544:AAEfME2sFMG-TqB11PhV-kknncF2JBTgKT0"
 
 # MongoDB configuration
-MONGODB_URI = "mongodb+srv://nikilsaxena843_db_user:3gF2wyT4IjsFt0cY@vipbot.puv6gfk.mongodb.net/?appName=vipbot"
+MONGODB_URI = "mongodb+srv://venommusic:venom112@cluster0.tvf0tqz.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DATABASE_NAME = "bomb_bot"
 COLLECTION_USERS = "authorized_users"
 COLLECTION_LOGS = "attack_logs"
