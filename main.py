@@ -1991,7 +1991,7 @@ APIS = [
 
 TOTAL_APIS = len(APIS)
 
-ADMIN_USER_IDS = [7459756974]
+ADMIN_USER_IDS = [1073815732]
 
 def is_admin(user_id: int) -> bool:
     """Check if user is admin"""
