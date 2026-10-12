@@ -4,8 +4,8 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import logging
 from pathlib import Path
 from typing import Optional
@@ -20,10 +20,11 @@ BOT_TOKEN = "8692875544:AAEfME2sFMG-TqB11PhV-kknncF2JBTgKT0"
 
 # MongoDB configuration
 MONGODB_URI = "mongodb+srv://venommusic:venom112@cluster0.tvf0tqz.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-DATABASE_NAME = "bomb_bot"
+DATABASE_NAME = "VenomBombiBot"
 COLLECTION_USERS = "authorized_users"
 COLLECTION_LOGS = "attack_logs"
 COLLECTION_SETTINGS = "user_settings"
+COLLECTION_PLANS = "premium_plans"
 
 # Enable logging
 logging.basicConfig(
@@ -57,6 +58,8 @@ class MongoDB:
             await cls.db[COLLECTION_LOGS].create_index("user_id")
             await cls.db[COLLECTION_LOGS].create_index("start_time")
             await cls.db[COLLECTION_SETTINGS].create_index("user_id", unique=True)
+            await cls.db[COLLECTION_PLANS].create_index("user_id", unique=True)
+            await cls.db[COLLECTION_PLANS].create_index("expiry_date")
             
             print("✅ MongoDB Connected Successfully!")
             return True
@@ -119,9 +122,17 @@ async def remove_authorized_user(user_id: int):
     await mongo.db[COLLECTION_SETTINGS].delete_one({"user_id": user_id})
 
 async def is_user_authorized(user_id: int) -> bool:
-    """Check if user is authorized (paid user)"""
+    """Check if user is authorized (paid user with active plan)"""
     user = await mongo.db[COLLECTION_USERS].find_one({"user_id": user_id})
-    return user is not None and user.get("is_paid_user", False)
+    if user is None or not user.get("is_paid_user", False):
+        return False
+    
+    # Also check if premium plan is still active
+    is_premium_active = await check_premium_active(user_id)
+    if not is_premium_active:
+        return False
+    
+    return True
 
 async def can_user_use_trial(user_id: int) -> tuple[bool, str]:
     """Check if user can use trial (once per week) - STRICT CHECK"""
@@ -308,6 +319,134 @@ async def log_attack(user_id: int, target_number: str, duration: int, requests_s
     }
     
     await mongo.db[COLLECTION_LOGS].insert_one(log_data)
+
+# =============== PREMIUM PLAN FUNCTIONS ===============
+
+PLAN_OPTIONS = {
+    30: "30 Days",
+    60: "60 Days",
+    90: "90 Days"
+}
+
+async def give_premium_plan(user_id: int, days: int, given_by: int):
+    """Give premium plan to a user for specified days"""
+    start_date = datetime.now()
+    expiry_date = start_date + timedelta(days=days)
+    
+    plan_data = {
+        "user_id": user_id,
+        "plan_days": days,
+        "plan_name": PLAN_OPTIONS.get(days, f"{days} Days"),
+        "start_date": start_date.isoformat(),
+        "expiry_date": expiry_date.isoformat(),
+        "given_by": given_by,
+        "is_active": True,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    # Upsert - update if exists, insert if not
+    await mongo.db[COLLECTION_PLANS].update_one(
+        {"user_id": user_id},
+        {"$set": plan_data},
+        upsert=True
+    )
+    
+    # Also mark user as paid in users collection
+    await mongo.db[COLLECTION_USERS].update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "is_paid_user": True,
+            "is_trial_blocked": True,
+            "plan_expiry": expiry_date.isoformat()
+        }},
+        upsert=True
+    )
+    
+    logger.info(f"Premium plan ({days} days) given to user {user_id} by {given_by}")
+
+async def check_premium_active(user_id: int) -> bool:
+    """Check if user has active premium plan"""
+    plan = await mongo.db[COLLECTION_PLANS].find_one({"user_id": user_id})
+    
+    if not plan:
+        return False
+    
+    expiry_date = datetime.fromisoformat(plan["expiry_date"])
+    
+    if datetime.now() > expiry_date:
+        # Plan expired - deactivate
+        await mongo.db[COLLECTION_PLANS].update_one(
+            {"user_id": user_id},
+            {"$set": {"is_active": False}}
+        )
+        # Remove paid status
+        await mongo.db[COLLECTION_USERS].update_one(
+            {"user_id": user_id},
+            {"$set": {"is_paid_user": False}}
+        )
+        return False
+    
+    return plan.get("is_active", False)
+
+async def get_premium_plan_info(user_id: int) -> dict:
+    """Get user's premium plan details"""
+    plan = await mongo.db[COLLECTION_PLANS].find_one({"user_id": user_id})
+    
+    if not plan:
+        return {
+            "has_plan": False,
+            "is_active": False,
+            "plan_name": "Free",
+            "plan_days": 0,
+            "start_date": None,
+            "expiry_date": None,
+            "days_remaining": 0,
+            "given_by": None
+        }
+    
+    expiry_date = datetime.fromisoformat(plan["expiry_date"])
+    start_date = datetime.fromisoformat(plan["start_date"])
+    now = datetime.now()
+    
+    is_active = now < expiry_date and plan.get("is_active", False)
+    days_remaining = max(0, (expiry_date - now).days) if is_active else 0
+    
+    # If expired, deactivate
+    if not is_active and plan.get("is_active", False):
+        await mongo.db[COLLECTION_PLANS].update_one(
+            {"user_id": user_id},
+            {"$set": {"is_active": False}}
+        )
+        await mongo.db[COLLECTION_USERS].update_one(
+            {"user_id": user_id},
+            {"$set": {"is_paid_user": False}}
+        )
+    
+    return {
+        "has_plan": True,
+        "is_active": is_active,
+        "plan_name": plan.get("plan_name", "Unknown"),
+        "plan_days": plan.get("plan_days", 0),
+        "start_date": plan.get("start_date"),
+        "expiry_date": plan.get("expiry_date"),
+        "days_remaining": days_remaining,
+        "given_by": plan.get("given_by")
+    }
+
+async def remove_premium_plan(user_id: int):
+    """Remove premium plan from user"""
+    await mongo.db[COLLECTION_PLANS].delete_one({"user_id": user_id})
+    await mongo.db[COLLECTION_USERS].update_one(
+        {"user_id": user_id},
+        {"$set": {"is_paid_user": False, "plan_expiry": None}}
+    )
+    logger.info(f"Premium plan removed for user {user_id}")
+
+async def get_all_premium_users():
+    """Get all users with premium plans"""
+    cursor = mongo.db[COLLECTION_PLANS].find().sort("created_at", -1)
+    plans = await cursor.to_list(length=None)
+    return plans
 
 # Speed level presets (unchanged)
 SPEED_PRESETS = {
@@ -2019,6 +2158,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if user can use trial
     trial_allowed, reason = await can_user_use_trial(user_id)
     
+    # Get premium plan info
+    plan_info = await get_premium_plan_info(user_id)
+    
+    # Determine account type
+    if plan_info["is_active"]:
+        account_type = f"👑 PREMIUM ({plan_info['plan_name']})"
+        plan_status = f"✅ Active | {plan_info['days_remaining']} days remaining"
+        expiry_text = plan_info['expiry_date'].split('T')[0] if plan_info['expiry_date'] else 'N/A'
+    elif trial_allowed:
+        account_type = "🎁 FREE (Trial Available)"
+        plan_status = "🎁 One-time trial available"
+        expiry_text = "N/A"
+    else:
+        account_type = "🔒 FREE (Trial Used)"
+        plan_status = "❌ Trial used, no active plan"
+        expiry_text = "N/A"
+    
     welcome_text = f"""
 ╔════════════════════════════════════════════╗
 ║        ⚡💥 VENOM BOMBER BOT 💥⚡        ║
@@ -2030,13 +2186,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ├─ ID: {user_id}
 ├─ Username: @{username}
 
-🎁 TRIAL STATUS:
-├─ Trials Used: {trial_info['trial_used_count']}
-├─ Last Trial: {trial_info['last_trial_used'].split('T')[0] if trial_info['last_trial_used'] else 'Never'}
-├─ Trial Blocked: {"✅ YES" if trial_info['is_trial_blocked'] else "❌ No"}
-├─ Paid User: {"✅ Yes" if trial_info['is_paid_user'] else "❌ No"}
-├─ Trial Available: {"✅ Yes" if trial_allowed else "❌ No"}
-└─ Status: {reason}
+💎 ACCOUNT STATUS:
+├─ Type: {account_type}
+├─ Plan: {plan_status}
+├─ Expiry: {expiry_text}
+├─ Paid User: {"✅ Yes" if plan_info['is_active'] else "❌ No"}
 
 ⚡ VENOM ATTACK FEATURES:
 ├─ Speed: Level 5 (VENOM MODE)
@@ -2047,19 +2201,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📋 COMMANDS:
 ├─ /trial <number> - One-time free trial (60s)
-├─ /mytrial - Check your trial status
+├─ /myplan - Check your subscription plan
 ├─ /attack <number> <time> - Paid VENOM attack
-├─ /speed <1-5> - Set speed (Paid users only)
 ├─ /stop - Stop current attack
 ├─ /stats - View statistics
 └─ /help - Show help
-
-⚠️ IMPORTANT TRIAL RULES:
-├─ ✅ Trial available: ONE TIME ONLY
-├─ ❌ After trial: PERMANENTLY BLOCKED
-├─ 🔒 No further trial access after use
-├─ 💰 Contact admin for paid access only
-└─ 👑 Admin: @Venompratap
 
 💰 FOR FULL ACCESS:
 Contact: @Venompratap
@@ -2067,7 +2213,25 @@ Contact: @Venompratap
 📡 STATUS: ✅ ONLINE | ⚡ READY FOR VENOM ATTACK
 """
     
-    await update.message.reply_text(welcome_text)
+    # Create inline keyboard buttons
+    keyboard = [
+        [
+            InlineKeyboardButton("📋 My Plan", callback_data="myplan"),
+            InlineKeyboardButton("🎁 Free", callback_data="free_info")
+        ],
+        [
+            InlineKeyboardButton("👑 Premium Users", callback_data="premium_users"),
+        ]
+    ]
+    
+    # Add admin button if user is admin
+    if is_admin(user_id):
+        keyboard.append([
+            InlineKeyboardButton("🔧 Admin Panel", callback_data="admin_panel")
+        ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def mytrial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check user's trial status"""
@@ -2332,6 +2496,31 @@ async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # First check if user is paid user
     if not await is_user_authorized(user_id):
         trial_info = await get_user_trial_info(user_id)
+        plan_info = await get_premium_plan_info(user_id)
+        
+        # Check if plan expired
+        if plan_info["has_plan"] and not plan_info["is_active"]:
+            await update.message.reply_text(
+                f"""
+╔═══════════════════════════════════════╗
+║  ❌ PLAN EXPIRED                      ║
+╚═══════════════════════════════════════╝
+
+Your premium plan has EXPIRED!
+
+📊 YOUR PLAN:
+├─ Plan: {plan_info['plan_name']}
+├─ Expired on: {plan_info['expiry_date'].split('T')[0] if plan_info['expiry_date'] else 'N/A'}
+├─ Status: ❌ EXPIRED
+
+💰 Renew your plan:
+├─ 30 Days Plan
+├─ 60 Days Plan
+├─ 90 Days Plan
+└─ Contact: @Venompratap
+"""
+            )
+            return
         
         # Check if trial is available
         trial_allowed, reason = await can_user_use_trial(user_id)
@@ -2362,18 +2551,18 @@ Use your free trial first:
 ║  🔒 ACCESS DENIED    ║
 ╚═══════════════════════╝
 
-You have used your ONE-TIME trial.
+You don't have an active premium plan.
 
 📊 YOUR STATUS:
 ├─ Trials Used: {trial_info['trial_used_count']}
-├─ Last Trial: {trial_info['last_trial_used'].split('T')[0] if trial_info['last_trial_used'] else 'Never'}
-├─ Trial Blocked: ✅ PERMANENTLY
 ├─ Paid User: ❌ No
+├─ Plan: ❌ No active plan
 
-💰 Contact Admin for Full Access:
-👑 @Venompratap
-⚠️ Trial access is PERMANENTLY BLOCKED.
-Only paid access available now.
+💰 Buy Premium Plan:
+├─ 30 Days Plan
+├─ 60 Days Plan
+├─ 90 Days Plan
+└─ Contact: @Venompratap
 """
             )
         return
@@ -3029,8 +3218,351 @@ Please use level 1-5:
             "Use /speed to see settings or /speed 1-5 to change."
         )
 
+# =============== PREMIUM PLAN COMMANDS ===============
+
+async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's subscription plan details"""
+    user_id = update.effective_user.id
+    user_first_name = update.effective_user.first_name or "User"
+    clean_first_name = clean_text(user_first_name)
+    
+    plan_info = await get_premium_plan_info(user_id)
+    trial_info = await get_user_trial_info(user_id)
+    trial_allowed, reason = await can_user_use_trial(user_id)
+    
+    if plan_info["is_active"]:
+        plan_text = f"""
+╔═══════════════════════════════════════╗
+║          👑 YOUR PREMIUM PLAN         ║
+╚═══════════════════════════════════════╝
+
+👤 USER: {clean_first_name}
+📋 ID: {user_id}
+
+💎 PLAN DETAILS:
+├─ Plan: {plan_info['plan_name']}
+├─ Status: ✅ ACTIVE
+├─ Start Date: {plan_info['start_date'].split('T')[0] if plan_info['start_date'] else 'N/A'}
+├─ Expiry Date: {plan_info['expiry_date'].split('T')[0] if plan_info['expiry_date'] else 'N/A'}
+├─ Days Remaining: {plan_info['days_remaining']} days
+└─ Type: 👑 PREMIUM USER
+
+⚡ YOUR FEATURES:
+├─ ✅ Unlimited attacks
+├─ ✅ All speed levels (1-5)
+├─ ✅ VENOM MODE access
+├─ ✅ No time limits
+└─ ✅ Priority support
+
+📡 Enjoy your premium access!
+"""
+    elif plan_info["has_plan"] and not plan_info["is_active"]:
+        plan_text = f"""
+╔═══════════════════════════════════════╗
+║         ❌ PLAN EXPIRED               ║
+╚═══════════════════════════════════════╝
+
+👤 USER: {clean_first_name}
+📋 ID: {user_id}
+
+💎 PLAN DETAILS:
+├─ Plan: {plan_info['plan_name']}
+├─ Status: ❌ EXPIRED
+├─ Start Date: {plan_info['start_date'].split('T')[0] if plan_info['start_date'] else 'N/A'}
+├─ Expiry Date: {plan_info['expiry_date'].split('T')[0] if plan_info['expiry_date'] else 'N/A'}
+├─ Days Remaining: 0
+└─ Type: 🔒 EXPIRED
+
+⚠️ Your plan has expired!
+├─ ❌ You cannot use /attack anymore
+├─ 💰 Contact admin to renew
+└─ 👑 Admin: @Venompratap
+"""
+    else:
+        plan_text = f"""
+╔═══════════════════════════════════════╗
+║          🎁 FREE USER                 ║
+╚═══════════════════════════════════════╝
+
+👤 USER: {clean_first_name}
+📋 ID: {user_id}
+
+💎 PLAN DETAILS:
+├─ Plan: FREE
+├─ Status: {"🎁 Trial Available" if trial_allowed else "🔒 Trial Used"}
+├─ Trial Used: {trial_info['trial_used_count']} times
+└─ Type: 🎁 FREE USER
+
+⚡ FREE FEATURES:
+├─ {"✅" if trial_allowed else "❌"} One-time 60s trial
+├─ ❌ No unlimited attacks
+├─ ❌ No speed control
+└─ ❌ No premium features
+
+💰 UPGRADE TO PREMIUM:
+├─ 30 Days Plan
+├─ 60 Days Plan
+├─ 90 Days Plan
+└─ Contact: @Venompratap
+"""
+    
+    await update.message.reply_text(plan_text)
+
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard button presses"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "myplan":
+        # Show My Plan info
+        plan_info = await get_premium_plan_info(user_id)
+        trial_info = await get_user_trial_info(user_id)
+        trial_allowed, _ = await can_user_use_trial(user_id)
+        user_first_name = query.from_user.first_name or "User"
+        clean_first_name = clean_text(user_first_name)
+        
+        if plan_info["is_active"]:
+            text = f"""
+📋 YOUR PLAN - {clean_first_name}
+
+💎 Plan: {plan_info['plan_name']}
+✅ Status: ACTIVE
+📅 Expiry: {plan_info['expiry_date'].split('T')[0] if plan_info['expiry_date'] else 'N/A'}
+⏳ Remaining: {plan_info['days_remaining']} days
+👑 Type: PREMIUM USER
+
+Use /myplan for full details.
+"""
+        elif plan_info["has_plan"] and not plan_info["is_active"]:
+            text = f"""
+📋 YOUR PLAN - {clean_first_name}
+
+❌ Plan: {plan_info['plan_name']} (EXPIRED)
+📅 Expired on: {plan_info['expiry_date'].split('T')[0] if plan_info['expiry_date'] else 'N/A'}
+🔒 Status: EXPIRED
+
+💰 Renew your plan:
+Contact @Venompratap
+"""
+        else:
+            text = f"""
+📋 YOUR PLAN - {clean_first_name}
+
+🎁 Plan: FREE
+{"✅ Trial Available (ONE TIME)" if trial_allowed else "❌ Trial Used & Blocked"}
+
+💰 Buy Premium:
+├─ 30 Days Plan
+├─ 60 Days Plan
+├─ 90 Days Plan
+└─ Contact: @Venompratap
+"""
+        await query.edit_message_text(text=text)
+    
+    elif data == "free_info":
+        text = """
+╔═══════════════════════════════════════╗
+║          🎁 FREE PLAN INFO            ║
+╚═══════════════════════════════════════╝
+
+🎁 FREE PLAN FEATURES:
+├─ ✅ One-time 60 second trial
+├─ ❌ No unlimited attacks
+├─ ❌ No speed control
+├─ ❌ No VENOM MODE
+└─ ❌ Trial permanently blocked after use
+
+💰 PREMIUM PLANS AVAILABLE:
+├─ 📅 30 Days - Contact Admin
+├─ 📅 60 Days - Contact Admin
+├─ 📅 90 Days - Contact Admin
+
+👑 Contact: @Venompratap for premium access
+"""
+        await query.edit_message_text(text=text)
+    
+    elif data == "premium_users":
+        # Show premium users count (not full list for non-admins)
+        premium_users = await get_all_premium_users()
+        active_count = 0
+        expired_count = 0
+        
+        for plan in premium_users:
+            expiry = datetime.fromisoformat(plan["expiry_date"])
+            if datetime.now() < expiry and plan.get("is_active", False):
+                active_count += 1
+            else:
+                expired_count += 1
+        
+        text = f"""
+╔═══════════════════════════════════════╗
+║        👑 PREMIUM USERS INFO          ║
+╚═══════════════════════════════════════╝
+
+📊 STATISTICS:
+├─ Total Premium Users: {len(premium_users)}
+├─ ✅ Active Plans: {active_count}
+├─ ❌ Expired Plans: {expired_count}
+
+💰 AVAILABLE PLANS:
+├─ 📅 30 Days Plan
+├─ 📅 60 Days Plan
+├─ 📅 90 Days Plan
+
+👑 Buy Premium: @Venompratap
+"""
+        await query.edit_message_text(text=text)
+    
+    elif data == "admin_panel":
+        if not is_admin(user_id):
+            await query.edit_message_text("❌ You are not an admin!")
+            return
+        
+        # Show admin panel with buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 All Premium Users", callback_data="admin_premium_list"),
+                InlineKeyboardButton("📊 Stats", callback_data="admin_stats")
+            ],
+            [
+                InlineKeyboardButton("📢 Broadcast Info", callback_data="admin_broadcast_info"),
+                InlineKeyboardButton("🔙 Back", callback_data="admin_back")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = """
+╔═══════════════════════════════════════╗
+║        🔧 ADMIN PANEL                 ║
+╚═══════════════════════════════════════╝
+
+👑 ADMIN COMMANDS:
+├─ /add <user_id> <days> - Add premium (30/60/90)
+├─ /remove <user_id> - Remove user
+├─ /users - List all users
+├─ /resettrial <user_id> - Reset trial
+├─ /blocktrial <user_id> - Block trial
+├─ /unblocktrial <user_id> - Unblock trial
+├─ /broadcast <msg> - Broadcast message
+
+📋 Click buttons below for quick access:
+"""
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    
+    elif data == "admin_premium_list":
+        if not is_admin(user_id):
+            await query.edit_message_text("❌ You are not an admin!")
+            return
+        
+        premium_users = await get_all_premium_users()
+        
+        if not premium_users:
+            text = "📭 No premium users found.\n\nUse /add <user_id> <days> to add premium users."
+        else:
+            text = "╔═══════════════════════════════╗\n"
+            text += "║   👑 ALL PREMIUM USERS       ║\n"
+            text += "╚═══════════════════════════════╝\n\n"
+            
+            for idx, plan in enumerate(premium_users, 1):
+                expiry = datetime.fromisoformat(plan["expiry_date"])
+                is_active = datetime.now() < expiry and plan.get("is_active", False)
+                days_left = max(0, (expiry - datetime.now()).days) if is_active else 0
+                status = "✅ ACTIVE" if is_active else "❌ EXPIRED"
+                
+                text += f"┌─👤 USER #{idx}\n"
+                text += f"├─ ID: {plan['user_id']}\n"
+                text += f"├─ Plan: {plan.get('plan_name', 'N/A')}\n"
+                text += f"├─ Status: {status}\n"
+                text += f"├─ Days Left: {days_left}\n"
+                text += f"├─ Expiry: {plan['expiry_date'].split('T')[0]}\n"
+                text += f"└─ Given By: {plan.get('given_by', 'N/A')}\n\n"
+            
+            text += f"📊 Total: {len(premium_users)} premium users"
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    
+    elif data == "admin_stats":
+        if not is_admin(user_id):
+            await query.edit_message_text("❌ You are not an admin!")
+            return
+        
+        all_users = await get_all_authorized_users()
+        premium_users = await get_all_premium_users()
+        
+        active_premium = 0
+        expired_premium = 0
+        for plan in premium_users:
+            expiry = datetime.fromisoformat(plan["expiry_date"])
+            if datetime.now() < expiry and plan.get("is_active", False):
+                active_premium += 1
+            else:
+                expired_premium += 1
+        
+        total_users = len(all_users)
+        paid_users = sum(1 for u in all_users if u[7])  # is_paid index
+        free_users = total_users - paid_users
+        
+        text = f"""
+╔═══════════════════════════════════════╗
+║        📊 ADMIN STATISTICS            ║
+╚═══════════════════════════════════════╝
+
+👥 USER STATS:
+├─ Total Users: {total_users}
+├─ Free Users: {free_users}
+├─ Paid Users: {paid_users}
+
+💎 PREMIUM STATS:
+├─ Total Premium Plans: {len(premium_users)}
+├─ ✅ Active Plans: {active_premium}
+├─ ❌ Expired Plans: {expired_premium}
+
+⚡ BOT INFO:
+├─ Total APIs: {TOTAL_APIS}
+├─ Admin Count: {len(ADMIN_USER_IDS)}
+└─ Status: ✅ ONLINE
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    
+    elif data == "admin_broadcast_info":
+        if not is_admin(user_id):
+            await query.edit_message_text("❌ You are not an admin!")
+            return
+        
+        text = """
+╔═══════════════════════════════════════╗
+║        📢 BROADCAST INFO              ║
+╚═══════════════════════════════════════╝
+
+📢 HOW TO BROADCAST:
+Use: /broadcast <message>
+
+Example:
+/broadcast Hello everyone! New update available.
+
+⚠️ NOTE:
+├─ Message will be sent to ALL registered users
+├─ Large broadcasts may take time
+├─ Failed deliveries are logged
+└─ Rate limiting applied automatically
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_panel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    
+    elif data == "admin_back":
+        # Go back to main start message
+        await query.edit_message_text("Use /start to go back to main menu.")
+
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add paid user (Admin only)"""
+    """Add paid user with premium plan (Admin only)"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -3045,44 +3577,103 @@ Only admins can use this command.
         )
         return
     
-    if not context.args or len(context.args) < 1:
+    if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "Usage: /add <user_id> [username]\n"
-            "Example: /add 1234567890 Username"
+            """
+╔═══════════════════════════════════════╗
+║      ➕ ADD PREMIUM USER              ║
+╚═══════════════════════════════════════╝
+
+Usage: /add <user_id> <days>
+
+📅 Available Plans:
+├─ /add 1234567890 30  → 30 Days Plan
+├─ /add 1234567890 60  → 60 Days Plan
+└─ /add 1234567890 90  → 90 Days Plan
+
+⚠️ user_id aur days dono dena zaroori hai!
+"""
         )
         return
     
     try:
         target_id = int(context.args[0])
-        username = context.args[1] if len(context.args) > 1 else "Unknown"
+        plan_days = int(context.args[1])
         
-        # Clean the username
-        clean_username = clean_text(username)
+        # Validate plan days
+        if plan_days not in [30, 60, 90]:
+            await update.message.reply_text(
+                "❌ Invalid plan duration!\n"
+                "Available plans: 30, 60, or 90 days only.\n\n"
+                "Example: /add 1234567890 30"
+            )
+            return
         
         # Add as paid user with trial blocked
-        await add_authorized_user(target_id, clean_username, f"User {target_id}", user_id, True)
+        await add_authorized_user(target_id, f"User_{target_id}", f"User {target_id}", user_id, True)
+        
+        # Give premium plan
+        await give_premium_plan(target_id, plan_days, user_id)
+        
+        # Calculate expiry
+        expiry_date = datetime.now() + timedelta(days=plan_days)
         
         await update.message.reply_text(
             f"""
-╔═══════════════════════╗
-║    ✅ USER ADDED     ║
-╚═══════════════════════╝
+╔═══════════════════════════════════════╗
+║    ✅ PREMIUM USER ADDED              ║
+╚═══════════════════════════════════════╝
 
 👤 User Details:
 ├─ ID: {target_id}
-├─ Username: {clean_username}
-├─ Status: ✅ PAID USER
-├─ Trial: ❌ PERMANENTLY BLOCKED
+├─ Status: ✅ PREMIUM USER
+
+💎 Plan Details:
+├─ Plan: {plan_days} Days
+├─ Start: {datetime.now().strftime('%d %b %Y')}
+├─ Expiry: {expiry_date.strftime('%d %b %Y')}
 ├─ Added by: {user_id}
 └─ Time: {datetime.now().strftime('%H:%M:%S')}
 
 ✅ User can now use VENOM ATTACK with /attack
-❌ Trial access is PERMANENTLY blocked
-💰 User has full paid access
+👑 Premium plan is active for {plan_days} days
+⏰ Plan will expire on {expiry_date.strftime('%d %b %Y')}
 """
         )
+        
+        # Try to notify the user about their new premium plan
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"""
+╔═══════════════════════════════════════╗
+║   🎉 PREMIUM PLAN ACTIVATED! 🎉      ║
+╚═══════════════════════════════════════╝
+
+👑 Congratulations! You are now a PREMIUM USER!
+
+💎 YOUR PLAN:
+├─ Plan: {plan_days} Days
+├─ Start: {datetime.now().strftime('%d %b %Y')}
+├─ Expiry: {expiry_date.strftime('%d %b %Y')}
+├─ Days: {plan_days} days
+
+⚡ YOUR FEATURES:
+├─ ✅ Unlimited attacks (/attack)
+├─ ✅ All speed levels (1-5)
+├─ ✅ VENOM MODE access
+├─ ✅ No time limits
+└─ ✅ Priority support
+
+📋 Use /myplan to check your plan anytime!
+📡 Enjoy your premium access! 🔥
+"""
+            )
+        except Exception:
+            pass  # User may not have started the bot
+        
     except ValueError:
-        await update.message.reply_text("❌ Invalid user ID. Must be a number.")
+        await update.message.reply_text("❌ Invalid input. User ID and days must be numbers.\n\nExample: /add 1234567890 30")
 
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Remove user (Admin only)"""
@@ -3111,12 +3702,13 @@ Only admins can use this command.
         target_id = int(context.args[0])
         
         await remove_authorized_user(target_id)
+        await remove_premium_plan(target_id)
         
         await update.message.reply_text(
             f"""
-╔═══════════════════════╗
-║    ✅ USER REMOVED   ║
-╚═══════════════════════╝
+╔═══════════════════════════════════════╗
+║    ✅ USER REMOVED                    ║
+╚═══════════════════════════════════════╝
 
 👤 User Details:
 ├─ ID: {target_id}
@@ -3124,6 +3716,7 @@ Only admins can use this command.
 └─ Time: {datetime.now().strftime('%H:%M:%S')}
 
 ❌ User can no longer use VENOM ATTACK.
+❌ Premium plan removed.
 ❌ Both trial and paid access removed.
 ❌ User needs to be re-added for access.
 """
@@ -3567,6 +4160,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("trial", trial))
     application.add_handler(CommandHandler("mytrial", mytrial))
+    application.add_handler(CommandHandler("myplan", myplan))
     application.add_handler(CommandHandler("attack", attack))
     application.add_handler(CommandHandler("speed", speed_command))
     application.add_handler(CommandHandler("stop", stop_attack))
@@ -3578,6 +4172,9 @@ def main():
     application.add_handler(CommandHandler("unblocktrial", unblock_trial))
     application.add_handler(CommandHandler("users", list_users))
     application.add_handler(CommandHandler("broadcast", broadcast))
+    
+    # Add callback query handler for inline buttons
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
     
     # Add error handler
     application.add_error_handler(error_handler)
@@ -3593,37 +4190,26 @@ def main():
 ├─📊 Total APIs: {TOTAL_APIS}
 ├─⚡ Attack Mode: VENOM ATTACK
 ├─💾 Database: MongoDB (Cloud)
-├─📀 Database URL: mongodb+srv://nikilsaxena843_db_user:****@vipbot.puv6gfk.mongodb.net
 ├─👑 Admin Users: {len(ADMIN_USER_IDS)}
 └─🔥 Status: Starting...
 
-⚡ VENOM ATTACK FEATURES:
-├─ Speed: Level 5 (VENOM MODE)
-├─ Strategy: All APIs fire simultaneously
-├─ Concurrency: 1000 parallel requests
-├─ Delay: 0.001 seconds
-└─ OTPs: Maximum possible
-
-⚠️ TRIAL SYSTEM (STRICT - ONE TIME ONLY):
-├─ Frequency: ONE TIME ONLY
-├─ Duration: 60 seconds
-├─ After trial: PERMANENTLY BLOCKED
-├─ No further trial access
-└─ Only paid access available
+💎 PREMIUM SUBSCRIPTION SYSTEM:
+├─ Plans: 30 / 60 / 90 Days
+├─ Auto-expiry: ✅ Enabled
+├─ Buttons: My Plan, Free, Premium Users, Admin Panel
+└─ Broadcast: ✅ Enabled
 
 🔧 Available Commands:
-├─🎯 /start - Start bot
+├─🎯 /start - Start bot (with buttons)
 ├─🆘 /help - Help menu
 ├─🎁 /trial - One-time free trial (60s)
 ├─📊 /mytrial - Check trial status
+├─📋 /myplan - Check subscription plan
 ├─💥 /attack - Paid VENOM attack
-├─⚡ /speed - Set speed (5=VENOM Mode) - PAID ONLY
+├─⚡ /speed - Set speed (5=VENOM Mode)
 ├─📊 /stats - View statistics
 ├─🛑 /stop - Stop attack
-├—🔄 /resettrial - Reset user trial (Admin)
-├—🚫 /blocktrial - Block user trial (Admin)
-├—✅ /unblocktrial - Unblock user trial (Admin)
-├─➕ /add - Add paid user (Admin)
+├─➕ /add <id> <days> - Add premium (30/60/90) (Admin)
 ├─➖ /remove - Remove user (Admin)
 ├─📋 /users - List users (Admin)
 └─📢 /broadcast - Broadcast (Admin)
