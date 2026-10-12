@@ -2138,21 +2138,17 @@ def is_admin(user_id: int) -> bool:
 
 # =============== BOT FUNCTIONS ===============
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a message when the command /start is issued."""
-    user_id = update.effective_user.id
-    
-    # Get user's first name (clean it)
-    user_first_name = update.effective_user.first_name or "User"
-    clean_first_name = clean_text(user_first_name)
-    username = update.effective_user.username or "Not set"
+async def build_start_menu(user_id: int, user_first_name: str, username: str):
+    """Build start menu text and keyboard buttons"""
+    clean_first_name = clean_text(user_first_name or "User")
+    clean_username = username or "Not set"
     
     # Get trial info
     trial_info = await get_user_trial_info(user_id)
     
     # If user doesn't exist in database, add them
     if not trial_info['exists']:
-        await add_authorized_user(user_id, username, clean_first_name, 0, False)
+        await add_authorized_user(user_id, clean_username, clean_first_name, 0, False)
         trial_info = await get_user_trial_info(user_id)
     
     # Check if user can use trial
@@ -2184,7 +2180,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👤 USER INFO:
 ├─ Name: {clean_first_name}
 ├─ ID: {user_id}
-├─ Username: @{username}
+├─ Username: @{clean_username}
 
 💎 ACCOUNT STATUS:
 ├─ Type: {account_type}
@@ -2213,24 +2209,31 @@ Contact: @Venompratap
 📡 STATUS: ✅ ONLINE | ⚡ READY FOR VENOM ATTACK
 """
     
-    # Create inline keyboard buttons
+    # Regular/Free users see only "My Plan" and "Free"
     keyboard = [
         [
             InlineKeyboardButton("📋 My Plan", callback_data="myplan"),
             InlineKeyboardButton("🎁 Free", callback_data="free_info")
-        ],
-        [
-            InlineKeyboardButton("👑 Premium Users", callback_data="premium_users"),
         ]
     ]
     
-    # Add admin button if user is admin
+    # ONLY Owner/Admin gets "Premium Users" and "Admin Panel"
     if is_admin(user_id):
         keyboard.append([
+            InlineKeyboardButton("👑 Premium Users", callback_data="premium_users"),
             InlineKeyboardButton("🔧 Admin Panel", callback_data="admin_panel")
         ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
+    return welcome_text, reply_markup
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    user_id = update.effective_user.id
+    user_first_name = update.effective_user.first_name or "User"
+    username = update.effective_user.username or "Not set"
+    
+    welcome_text, reply_markup = await build_start_menu(user_id, user_first_name, username)
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def mytrial(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3360,7 +3363,9 @@ Contact @Venompratap
 ├─ 90 Days Plan
 └─ Contact: @Venompratap
 """
-        await query.edit_message_text(text=text)
+        back_keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(back_keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
     
     elif data == "free_info":
         text = """
@@ -3382,10 +3387,18 @@ Contact @Venompratap
 
 👑 Contact: @Venompratap for premium access
 """
-        await query.edit_message_text(text=text)
+        back_keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(back_keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
     
     elif data == "premium_users":
-        # Show premium users count (not full list for non-admins)
+        # Owner only feature
+        if not is_admin(user_id):
+            back_keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
+            await query.edit_message_text("❌ This feature is for Owner only!", reply_markup=InlineKeyboardMarkup(back_keyboard))
+            return
+            
+        # Show premium users count to owner
         premium_users = await get_all_premium_users()
         active_count = 0
         expired_count = 0
@@ -3414,7 +3427,9 @@ Contact @Venompratap
 
 👑 Buy Premium: @Venompratap
 """
-        await query.edit_message_text(text=text)
+        back_keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(back_keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
     
     elif data == "admin_panel":
         if not is_admin(user_id):
@@ -3429,7 +3444,7 @@ Contact @Venompratap
             ],
             [
                 InlineKeyboardButton("📢 Broadcast Info", callback_data="admin_broadcast_info"),
-                InlineKeyboardButton("🔙 Back", callback_data="admin_back")
+                InlineKeyboardButton("🔙 Back", callback_data="back_to_main")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3557,9 +3572,12 @@ Example:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text=text, reply_markup=reply_markup)
     
-    elif data == "admin_back":
-        # Go back to main start message
-        await query.edit_message_text("Use /start to go back to main menu.")
+    elif data in ["back_to_main", "admin_back"]:
+        # Go back to main start message and keyboard
+        user_first_name = query.from_user.first_name or "User"
+        username = query.from_user.username or "Not set"
+        welcome_text, reply_markup = await build_start_menu(user_id, user_first_name, username)
+        await query.edit_message_text(text=welcome_text, reply_markup=reply_markup)
 
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add paid user with premium plan (Admin only)"""
