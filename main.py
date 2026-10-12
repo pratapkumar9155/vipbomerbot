@@ -2171,11 +2171,8 @@ async def build_start_menu(user_id: int, user_first_name: str, username: str):
         plan_status = "❌ Trial used, no active plan"
         expiry_text = "N/A"
     
-    welcome_text = f"""
-╔════════════════════════════════════════════╗
-║        ⚡💥 VENOM BOMBER BOT 💥⚡        ║
-║           ULTIMATE SMS BOMBER              ║
-╚════════════════════════════════════════════╝
+    welcome_text = f"""⚡💥 VENOM BOMBER BOT 💥⚡
+   ULTIMATE SMS BOMBER
 
 👤 USER INFO:
 ├─ Name: {clean_first_name}
@@ -2504,10 +2501,7 @@ async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check if plan expired
         if plan_info["has_plan"] and not plan_info["is_active"]:
             await update.message.reply_text(
-                f"""
-╔═══════════════════════════════════════╗
-║  ❌ PLAN EXPIRED                      ║
-╚═══════════════════════════════════════╝
+                f"""❌ PLAN EXPIRED!
 
 Your premium plan has EXPIRED!
 
@@ -3234,10 +3228,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trial_allowed, reason = await can_user_use_trial(user_id)
     
     if plan_info["is_active"]:
-        plan_text = f"""
-╔═══════════════════════════════════════╗
-║          👑 YOUR PREMIUM PLAN         ║
-╚═══════════════════════════════════════╝
+        plan_text = f"""👑 YOUR PREMIUM PLAN
 
 👤 USER: {clean_first_name}
 📋 ID: {user_id}
@@ -3260,10 +3251,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📡 Enjoy your premium access!
 """
     elif plan_info["has_plan"] and not plan_info["is_active"]:
-        plan_text = f"""
-╔═══════════════════════════════════════╗
-║         ❌ PLAN EXPIRED               ║
-╚═══════════════════════════════════════╝
+        plan_text = f"""❌ PLAN EXPIRED
 
 👤 USER: {clean_first_name}
 📋 ID: {user_id}
@@ -3282,10 +3270,7 @@ async def myplan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 └─ 👑 Admin: @Venompratap
 """
     else:
-        plan_text = f"""
-╔═══════════════════════════════════════╗
-║          🎁 FREE USER                 ║
-╚═══════════════════════════════════════╝
+        plan_text = f"""🎁 FREE USER
 
 👤 USER: {clean_first_name}
 📋 ID: {user_id}
@@ -3368,10 +3353,7 @@ Contact @Venompratap
         await query.edit_message_text(text=text, reply_markup=reply_markup)
     
     elif data == "free_info":
-        text = """
-╔═══════════════════════════════════════╗
-║          🎁 FREE PLAN INFO            ║
-╚═══════════════════════════════════════╝
+        text = """🎁 FREE PLAN INFO
 
 🎁 FREE PLAN FEATURES:
 ├─ ✅ One-time 60 second trial
@@ -3410,10 +3392,7 @@ Contact @Venompratap
             else:
                 expired_count += 1
         
-        text = f"""
-╔═══════════════════════════════════════╗
-║        👑 PREMIUM USERS INFO          ║
-╚═══════════════════════════════════════╝
+        text = f"""👑 PREMIUM USERS INFO
 
 📊 STATISTICS:
 ├─ Total Premium Users: {len(premium_users)}
@@ -3449,10 +3428,7 @@ Contact @Venompratap
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        text = """
-╔═══════════════════════════════════════╗
-║        🔧 ADMIN PANEL                 ║
-╚═══════════════════════════════════════╝
+        text = """🔧 ADMIN PANEL
 
 👑 ADMIN COMMANDS:
 ├─ /add <user_id> <days> - Add premium (30/60/90)
@@ -3477,9 +3453,7 @@ Contact @Venompratap
         if not premium_users:
             text = "📭 No premium users found.\n\nUse /add <user_id> <days> to add premium users."
         else:
-            text = "╔═══════════════════════════════╗\n"
-            text += "║   👑 ALL PREMIUM USERS       ║\n"
-            text += "╚═══════════════════════════════╝\n\n"
+            text = "👑 ALL PREMIUM USERS\n\n"
             
             for idx, plan in enumerate(premium_users, 1):
                 expiry = datetime.fromisoformat(plan["expiry_date"])
@@ -3522,10 +3496,7 @@ Contact @Venompratap
         paid_users = sum(1 for u in all_users if u[7])  # is_paid index
         free_users = total_users - paid_users
         
-        text = f"""
-╔═══════════════════════════════════════╗
-║        📊 ADMIN STATISTICS            ║
-╚═══════════════════════════════════════╝
+        text = f"""📊 ADMIN STATISTICS
 
 👥 USER STATS:
 ├─ Total Users: {total_users}
@@ -3551,10 +3522,7 @@ Contact @Venompratap
             await query.edit_message_text("❌ You are not an admin!")
             return
         
-        text = """
-╔═══════════════════════════════════════╗
-║        📢 BROADCAST INFO              ║
-╚═══════════════════════════════════════╝
+        text = """📢 BROADCAST INFO
 
 📢 HOW TO BROADCAST:
 Use: /broadcast <message>
@@ -3597,10 +3565,7 @@ Only admins can use this command.
     
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            """
-╔═══════════════════════════════════════╗
-║      ➕ ADD PREMIUM USER              ║
-╚═══════════════════════════════════════╝
+            """➕ ADD PREMIUM USER
 
 Usage: /add <user_id> <days>
 
@@ -3637,10 +3602,7 @@ Usage: /add <user_id> <days>
         expiry_date = datetime.now() + timedelta(days=plan_days)
         
         await update.message.reply_text(
-            f"""
-╔═══════════════════════════════════════╗
-║    ✅ PREMIUM USER ADDED              ║
-╚═══════════════════════════════════════╝
+            f"""✅ PREMIUM USER ADDED
 
 👤 User Details:
 ├─ ID: {target_id}
@@ -3663,10 +3625,7 @@ Usage: /add <user_id> <days>
         try:
             await context.bot.send_message(
                 chat_id=target_id,
-                text=f"""
-╔═══════════════════════════════════════╗
-║   🎉 PREMIUM PLAN ACTIVATED! 🎉      ║
-╚═══════════════════════════════════════╝
+                text=f"""🎉 PREMIUM PLAN ACTIVATED! 🎉
 
 👑 Congratulations! You are now a PREMIUM USER!
 
@@ -3699,10 +3658,7 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not is_admin(user_id):
         await update.message.reply_text(
-            """
-╔═══════════════════════╗
-║ ❌ PERMISSION DENIED  ║
-╚═══════════════════════╝
+            """❌ PERMISSION DENIED
 
 Only admins can use this command.
 """
@@ -3723,10 +3679,7 @@ Only admins can use this command.
         await remove_premium_plan(target_id)
         
         await update.message.reply_text(
-            f"""
-╔═══════════════════════════════════════╗
-║    ✅ USER REMOVED                    ║
-╚═══════════════════════════════════════╝
+            f"""✅ USER REMOVED
 
 👤 User Details:
 ├─ ID: {target_id}
@@ -4110,10 +4063,7 @@ Only admins can use this command.
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"""
-╔═══════════════════════════════════════╗
-║        📢 BROADCAST MESSAGE          ║
-╚═══════════════════════════════════════╝
+                text=f"""📢 BROADCAST MESSAGE
 
 {message}
 
@@ -4142,10 +4092,7 @@ Only admins can use this command.
         await asyncio.sleep(0.1)
     
     await broadcast_msg.edit_text(
-        f"""
-╔═══════════════════════════════════════╗
-║         ✅ BROADCAST COMPLETE         ║
-╚═══════════════════════════════════════╝
+        f"""✅ BROADCAST COMPLETE
 
 📊 Broadcast Results:
 ├─ Total Users: {len(users)}
