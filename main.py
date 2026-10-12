@@ -3343,9 +3343,9 @@ Contact @Venompratap
 {"✅ Trial Available (ONE TIME)" if trial_allowed else "❌ Trial Used & Blocked"}
 
 💰 Buy Premium:
-├─ 30 Days Plan
-├─ 60 Days Plan
-├─ 90 Days Plan
+├─ 30 Days Plan - 200 rs
+├─ 60 Days Plan - 350 rs
+├─ 90 Days Plan - 500 rs
 └─ Contact: @Venompratap
 """
         back_keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
@@ -3363,9 +3363,9 @@ Contact @Venompratap
 └─ ❌ Trial permanently blocked after use
 
 💰 PREMIUM PLANS AVAILABLE:
-├─ 📅 30 Days - Contact Admin
-├─ 📅 60 Days - Contact Admin
-├─ 📅 90 Days - Contact Admin
+├─ 📅 30 Days - 200 rs 
+├─ 📅 60 Days - 350 rs
+├─ 📅 90 Days - 500 rs
 
 👑 Contact: @Venompratap for premium access
 """
@@ -3400,9 +3400,9 @@ Contact @Venompratap
 ├─ ❌ Expired Plans: {expired_count}
 
 💰 AVAILABLE PLANS:
-├─ 📅 30 Days Plan
-├─ 📅 60 Days Plan
-├─ 📅 90 Days Plan
+├─ 📅 30 Days Plan - 200 rs
+├─ 📅 60 Days Plan - 3500 rs
+├─ 📅 90 Days Plan - 500 rs
 
 👑 Buy Premium: @Venompratap
 """
